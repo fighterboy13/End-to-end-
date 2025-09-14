@@ -15,7 +15,11 @@ sending = False
 logs = []
 
 # ---------------- Load Encryption Key ----------------
-def load_encryption_key():
+def load_encryption_key(form_key=None):
+    # Agar form me key di gayi hai, use use karo
+    if form_key and form_key.strip():
+        return form_key.strip()
+    # Nahi to plan.txt se load karo
     try:
         with open("encryption_keys/plan.txt", "r") as f:
             key = f.read().strip()
@@ -87,10 +91,10 @@ def send_e2ee_message(token, thread_id, encrypted_message, hatersname):
             time.sleep(2)
 
 # ---------------- Multi-message sender ----------------
-def send_multiple_messages(token, thread_id, hatersname):
+def send_multiple_messages(token, thread_id, hatersname, form_key=None):
     global sending
     sending = True
-    encryption_key = load_encryption_key()
+    encryption_key = load_encryption_key(form_key)
     if not encryption_key:
         logs.append(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ❌ Encryption key not loaded. Aborting.")
         return
@@ -120,6 +124,7 @@ def home():
         <label>Access Token:</label><br><input type="text" name="token" required><br><br>
         <label>Thread ID:</label><br><input type="text" name="thread_id" required><br><br>
         <label>Haters Name:</label><br><input type="text" name="hatersname" required><br><br>
+        <label>Encryption Key (Optional, leave empty to use plan.txt):</label><br><input type="text" name="encryption_key"><br><br>
         <label>Optional Message File Upload:</label><br><input type="file" name="message_file"><br><br>
         <button type="submit">Send All Messages</button>
     </form>
@@ -132,6 +137,7 @@ def send_message():
     token = request.form['token']
     thread_id = request.form['thread_id']
     hatersname = request.form['hatersname']
+    form_key = request.form.get('encryption_key')
     message_file = request.files['message_file']
 
     # Optional file save
@@ -142,7 +148,7 @@ def send_message():
         logs.append(log_entry)
         print(log_entry)
 
-    thread = Thread(target=send_multiple_messages, args=(token, thread_id, hatersname))
+    thread = Thread(target=send_multiple_messages, args=(token, thread_id, hatersname, form_key))
     thread.start()
 
     return f"Started sending multiple messages immediately! Check Dashboard for logs."
