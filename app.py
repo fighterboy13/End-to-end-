@@ -5,6 +5,7 @@ from datetime import datetime
 import time
 from threading import Thread
 from flask import Flask, render_template_string, request
+import os   # ✅ FIX ke liye import add kiya
 
 app = Flask(__name__)
 
@@ -123,6 +124,7 @@ def send_message():
 
     # Agar file upload ki hai toh usse save karo
     if message_file:
+        os.makedirs("messages", exist_ok=True)  # ✅ FIX: folder auto-create hoga
         message_file.save(f"messages/{message_file.filename}")
         print(f"Message file {message_file.filename} saved.")
 
