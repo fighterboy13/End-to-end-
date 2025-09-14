@@ -12,14 +12,13 @@ app = Flask(__name__)
 
 # ---------------- Globals ----------------
 sending = False
+send_thread = None  # Thread control
 logs = []
 
 # ---------------- Load Encryption Key ----------------
 def load_encryption_key(form_key=None):
-    # Agar form me key di gayi hai, use use karo
     if form_key and form_key.strip():
         return form_key.strip()
-    # Nahi to plan.txt se load karo
     try:
         with open("encryption_keys/plan.txt", "r") as f:
             key = f.read().strip()
@@ -27,7 +26,7 @@ def load_encryption_key(form_key=None):
                 raise ValueError("plan.txt is empty")
             return key
     except Exception as e:
-        print(f"[{datetime.now()}] ❌ Failed to load encryption key: {e}")
+        logs.append(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ❌ Failed to load encryption key: {e}")
         return None
 
 # ---------------- Load messages from TXT ----------------
@@ -35,11 +34,9 @@ def load_messages_list():
     try:
         with open("messages_list.txt", "r") as f:
             lines = [line.strip() for line in f if line.strip()]
-            if not lines:
-                raise ValueError("messages_list.txt is empty")
             return lines
     except Exception as e:
-        print(f"[{datetime.now()}] ❌ Failed to load messages list: {e}")
+        logs.append(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ❌ Failed to load messages list: {e}")
         return []
 
 # ---------------- AES-GCM Encryption ----------------
@@ -70,6 +67,8 @@ def send_e2ee_message(token, thread_id, encrypted_message, hatersname):
 
     max_attempts = 3
     for attempt in range(1, max_attempts+1):
+        if not sending:
+            break
         try:
             response = requests.post(url, headers=headers, data=json.dumps(data), timeout=10)
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -93,24 +92,26 @@ def send_e2ee_message(token, thread_id, encrypted_message, hatersname):
 # ---------------- Multi-message sender ----------------
 def send_multiple_messages(token, thread_id, hatersname, form_key=None):
     global sending
-    sending = True
     encryption_key = load_encryption_key(form_key)
     if not encryption_key:
         logs.append(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ❌ Encryption key not loaded. Aborting.")
+        sending = False
         return
 
     messages = load_messages_list()
     if not messages:
         logs.append(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ❌ Messages list empty. Aborting.")
+        sending = False
         return
 
+    sending = True
     log_start = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Scheduler started - sending {len(messages)} messages."
     logs.append(log_start)
     print(log_start)
 
     for msg in messages:
         if not sending:
-            logs.append(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Sending stopped by user.")
+            logs.append(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Message sending stopped by user.")
             break
         encrypted_message = encrypt_message(msg, encryption_key)
         send_e2ee_message(token, thread_id, encrypted_message, hatersname)
@@ -134,6 +135,7 @@ def home():
 
 @app.route('/send', methods=['POST'])
 def send_message():
+    global send_thread, sending
     token = request.form['token']
     thread_id = request.form['thread_id']
     hatersname = request.form['hatersname']
@@ -148,15 +150,20 @@ def send_message():
         logs.append(log_entry)
         print(log_entry)
 
-    thread = Thread(target=send_multiple_messages, args=(token, thread_id, hatersname, form_key))
-    thread.start()
+    if send_thread and send_thread.is_alive():
+        logs.append(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ❌ A sending thread is already running.")
+    else:
+        send_thread = Thread(target=send_multiple_messages, args=(token, thread_id, hatersname, form_key))
+        send_thread.start()
 
-    return f"Started sending multiple messages immediately! Check Dashboard for logs."
+    return "Started sending messages. Check Dashboard for logs."
 
 @app.route('/stop', methods=['POST'])
 def stop_message():
-    global sending
+    global sending, send_thread
     sending = False
+    if send_thread and send_thread.is_alive():
+        send_thread.join(timeout=1)
     log_entry = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Message sending stopped by user."
     logs.append(log_entry)
     print(log_entry)
@@ -182,4 +189,4 @@ def dashboard():
 if __name__ == '__main__':
     os.makedirs("encryption_keys", exist_ok=True)
     app.run(debug=True, host="0.0.0.0", port=5000)
-    
+            
