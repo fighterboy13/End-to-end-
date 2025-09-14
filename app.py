@@ -2,115 +2,139 @@ import requests
 import json
 import base64
 from datetime import datetime
-import time
 from threading import Thread
 from flask import Flask, render_template_string, request
 import os
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+import time
 
 app = Flask(__name__)
 
 # ---------------- Globals ----------------
 sending = False
-logs = []  # Stores last 50 message logs
+logs = []
 
-# ---------------- Real AES-GCM Encryption ----------------
+# ---------------- Load Encryption Key ----------------
+def load_encryption_key():
+    try:
+        with open("encryption_keys/plan.txt", "r") as f:
+            key = f.read().strip()
+            if len(key) == 0:
+                raise ValueError("plan.txt is empty")
+            return key
+    except Exception as e:
+        print(f"[{datetime.now()}] ❌ Failed to load encryption key: {e}")
+        return None
+
+# ---------------- Load messages from TXT ----------------
+def load_messages_list():
+    try:
+        with open("messages_list.txt", "r") as f:
+            lines = [line.strip() for line in f if line.strip()]
+            if not lines:
+                raise ValueError("messages_list.txt is empty")
+            return lines
+    except Exception as e:
+        print(f"[{datetime.now()}] ❌ Failed to load messages list: {e}")
+        return []
+
+# ---------------- AES-GCM Encryption ----------------
 def encrypt_message(message, encryption_key):
     key_bytes = encryption_key.encode('utf-8')
-    key_bytes = key_bytes.ljust(32, b'\0')[:32]  # pad/trim to 32 bytes
-
+    key_bytes = key_bytes.ljust(32, b'\0')[:32]
     aesgcm = AESGCM(key_bytes)
-    nonce = os.urandom(12)  # 12 bytes nonce for AES-GCM
+    nonce = os.urandom(12)
     encrypted = aesgcm.encrypt(nonce, message.encode('utf-8'), None)
     return base64.b64encode(nonce + encrypted)
 
-# ---------------- Send Message Function ----------------
-def send_e2ee_message(token, thread_id, encrypted_message, encryption_key, hatersname, time_to_send):
+# ---------------- Send message with retry ----------------
+def send_e2ee_message(token, thread_id, encrypted_message, hatersname):
     url = f"https://www.facebook.com/messages/e2ee/t/{thread_id}"  
     headers = {
         'Authorization': f'Bearer {token}',
         'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Origin': 'https://www.facebook.com',
+        'Referer': 'https://www.facebook.com/messages'
     }
     data = {
         'message': encrypted_message.decode('utf-8'),
         'thread_id': thread_id,
-        'encryption_key': encryption_key,
         'hatersname': hatersname,
-        'time_to_send': time_to_send,
     }
-    try:
-        response = requests.post(url, headers=headers, data=json.dumps(data))
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if response.status_code == 200:
-            log_entry = f"[{timestamp}] ✅ Message sent successfully!"
-            logs.append(log_entry)
-            print(log_entry)
-        else:
-            log_entry = f"[{timestamp}] ❌ Error: {response.status_code} - {response.text}"
-            logs.append(log_entry)
-            print(log_entry)
-    except Exception as e:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        log_entry = f"[{timestamp}] ❌ Exception: {e}"
-        logs.append(log_entry)
-        print(log_entry)
 
-# ---------------- Scheduler ----------------
-def send_message_at_intervals(message, token, thread_id, encryption_key, hatersname, start_time):
+    max_attempts = 3
+    for attempt in range(1, max_attempts+1):
+        try:
+            response = requests.post(url, headers=headers, data=json.dumps(data), timeout=10)
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if response.status_code == 200:
+                log_entry = f"[{timestamp}] ✅ Message sent successfully!"
+                logs.append(log_entry)
+                print(log_entry)
+                break
+            else:
+                log_entry = f"[{timestamp}] ❌ Error: {response.status_code} - {response.text} (Attempt {attempt})"
+                logs.append(log_entry)
+                print(log_entry)
+                time.sleep(2)
+        except Exception as e:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            log_entry = f"[{timestamp}] ❌ Exception: {e} (Attempt {attempt})"
+            logs.append(log_entry)
+            print(log_entry)
+            time.sleep(2)
+
+# ---------------- Multi-message sender ----------------
+def send_multiple_messages(token, thread_id, hatersname):
     global sending
-    current_time = datetime.now()
-    time_difference = (start_time - current_time).total_seconds()
-    
-    if time_difference > 0:
-        print(f"[{datetime.now()}] Waiting {time_difference} seconds to start...")
-        time.sleep(time_difference)
-    else:
-        print(f"[{datetime.now()}] Start time in the past, sending immediately.")
-
     sending = True
-    while sending:
-        encrypted_message = encrypt_message(message, encryption_key)
-        send_e2ee_message(token, thread_id, encrypted_message, encryption_key, hatersname, start_time)
-        print(f"[{datetime.now()}] Scheduled message executed.")
-        time.sleep(60)
+    encryption_key = load_encryption_key()
+    if not encryption_key:
+        logs.append(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ❌ Encryption key not loaded. Aborting.")
+        return
+
+    messages = load_messages_list()
+    if not messages:
+        logs.append(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ❌ Messages list empty. Aborting.")
+        return
+
+    log_start = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Scheduler started - sending {len(messages)} messages."
+    logs.append(log_start)
+    print(log_start)
+
+    for msg in messages:
+        if not sending:
+            logs.append(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Sending stopped by user.")
+            break
+        encrypted_message = encrypt_message(msg, encryption_key)
+        send_e2ee_message(token, thread_id, encrypted_message, hatersname)
 
 # ---------------- Flask Routes ----------------
 @app.route('/')
 def home():
     return render_template_string('''
-    <!DOCTYPE html>
-    <html lang="en">
-    <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Send E2EE Message</title></head>
-    <body>
-        <h1>Send E2EE Message</h1>
-        <form action="/send" method="POST" enctype="multipart/form-data">
-            <label>Access Token:</label><br><input type="text" name="token" required><br><br>
-            <label>Thread ID:</label><br><input type="text" name="thread_id" required><br><br>
-            <label>Encryption Key:</label><br><input type="text" name="encryption_key" required><br><br>
-            <label>Haters Name:</label><br><input type="text" name="hatersname" required><br><br>
-            <label>Time to Send:</label><br><input type="datetime-local" name="time_to_send" required><br><br>
-            <label>Message:</label><br><textarea name="message" required></textarea><br><br>
-            <label>Message File (Optional):</label><br><input type="file" name="message_file"><br><br>
-            <button type="submit">Send Message</button>
-        </form>
-        <br>
-        <a href="/dashboard">View Dashboard</a>
-    </body>
-    </html>
+    <h1>Send Multiple E2EE Messages (Immediate)</h1>
+    <form action="/send" method="POST" enctype="multipart/form-data">
+        <label>Access Token:</label><br><input type="text" name="token" required><br><br>
+        <label>Thread ID:</label><br><input type="text" name="thread_id" required><br><br>
+        <label>Haters Name:</label><br><input type="text" name="hatersname" required><br><br>
+        <label>Optional Message File Upload:</label><br><input type="file" name="message_file"><br><br>
+        <button type="submit">Send All Messages</button>
+    </form>
+    <br>
+    <a href="/dashboard">View Dashboard</a>
     ''')
 
 @app.route('/send', methods=['POST'])
 def send_message():
     token = request.form['token']
     thread_id = request.form['thread_id']
-    encryption_key = request.form['encryption_key']
     hatersname = request.form['hatersname']
-    time_to_send = request.form['time_to_send']
-    message = request.form['message']
     message_file = request.files['message_file']
 
-    start_time = datetime.strptime(time_to_send, '%Y-%m-%dT%H:%M')
-
+    # Optional file save
     if message_file and message_file.filename != '':
         os.makedirs("messages", exist_ok=True)
         message_file.save(f"messages/{message_file.filename}")
@@ -118,10 +142,10 @@ def send_message():
         logs.append(log_entry)
         print(log_entry)
 
-    thread = Thread(target=send_message_at_intervals, args=(message, token, thread_id, encryption_key, hatersname, start_time))
+    thread = Thread(target=send_multiple_messages, args=(token, thread_id, hatersname))
     thread.start()
 
-    return "Message sending started! It will start at the specified time and continue every 60 seconds."
+    return f"Started sending multiple messages immediately! Check Dashboard for logs."
 
 @app.route('/stop', methods=['POST'])
 def stop_message():
@@ -134,31 +158,22 @@ def stop_message():
 
 @app.route('/dashboard')
 def dashboard():
-    log_html = "<br>".join(logs[-50:])  # last 50 logs
+    log_html = "<br>".join(logs[-50:])
     return render_template_string(f'''
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Message Dashboard</title>
-        <meta http-equiv="refresh" content="1"> <!-- auto-refresh every second -->
-    </head>
-    <body>
-        <h1>Message Sending Dashboard</h1>
-        <div style="white-space: pre-wrap; font-family: monospace; background:#f0f0f0; padding:10px; border-radius:5px; max-height:600px; overflow:auto;">
-            {log_html}
-        </div>
-        <br>
-        <form action="/stop" method="POST">
-            <button type="submit">Stop Sending</button>
-        </form>
-        <br>
-        <a href="/">Back to Form</a>
-    </body>
-    </html>
+    <h1>Message Dashboard</h1>
+    <div style="white-space: pre-wrap; font-family: monospace; background:#f0f0f0; padding:10px; border-radius:5px; max-height:600px; overflow:auto;">
+        {log_html}
+    </div>
+    <br>
+    <form action="/stop" method="POST">
+        <button type="submit">Stop Sending</button>
+    </form>
+    <br>
+    <a href="/">Back to Form</a>
+    <meta http-equiv="refresh" content="1">
     ''')
 
 if __name__ == '__main__':
+    os.makedirs("encryption_keys", exist_ok=True)
     app.run(debug=True, host="0.0.0.0", port=5000)
-            
+    
