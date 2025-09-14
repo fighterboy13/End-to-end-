@@ -1,0 +1,3 @@
+Hello friend!
+This is a test message.
+Another message here.
